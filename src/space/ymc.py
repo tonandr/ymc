@@ -23,6 +23,7 @@ import ipyparallel as ipp
 
 # Constant.
 MODEL_FILE_NAME = 'yaw_misalignment_calibrator.h5'
+RESULT_FILE_NAME = 'ymc_result.csv'
 
 testTimeRanges = [(pd.Timestamp('19/05/2018'), pd.Timestamp('25/05/2018'))
                                 , (pd.Timestamp('26/05/2018'), pd.Timestamp('01/06/2018'))
@@ -31,6 +32,9 @@ testTimeRanges = [(pd.Timestamp('19/05/2018'), pd.Timestamp('25/05/2018'))
                                 , (pd.Timestamp('24/08/2018'), pd.Timestamp('30/08/2018'))
                                 , (pd.Timestamp('28/08/2018'), pd.Timestamp('03/09/2018'))]
 
+
+WIND_BIN_SIZE = 1
+WIND_BIN_MAX = 16
 
 IS_MULTI_GPU = False
 NUM_GPUS = 4
@@ -98,7 +102,6 @@ def createTrValData(rawDataPath):
         df.index = pd.to_datetime(df.Timestamp)
         df = df[valid_columns]
         df = df.sort_values(by='avg_a_power', ascending=False)
-        df = df.iloc[0:int(df.shape[0]*0.1),:]
         df = df.groupby('g_status').get_group(1.0)
         df = df.dropna(how='any')     
     
@@ -110,9 +113,18 @@ def createTrValData(rawDataPath):
     bDF = bDF.sort_values(by='Timestamp')
     bDF = bDF[:testTimeRanges[0][0]]
     
+    # Get valid samples with top 10% power for each wind speed bin.
+    vbDF = pd.DataFrame(columns = bDF.columns)
+    
+    for v in np.arange(int(WIND_BIN_MAX/WIND_BIN_SIZE)):
+        df = bDF.query('({0:f} <= avg_ws1) & (avg_ws1 < {1:f})'.format(v * WIND_BIN_SIZE
+                                                                       , (v + 1.) * WIND_BIN_SIZE))
+        df = df.iloc[0:int(df.shape[0]*0.1),:] #?
+        vbDF = vbDF.append(df)
+    
     # Apply Kalman filtering to avg_rwd1 for each wind turbine
     # and calibrate avg_ws1 with coefficients.
-    bDFG = bDF.groupby('Turbin_no')
+    bDFG = vbDF.groupby('Turbin_no')
     bIds = list(bDFG.groups.keys())
     
     for i, bId in enumerate(bIds):
@@ -142,7 +154,6 @@ def createTrValData(rawDataPath):
         df.index = pd.to_datetime(df.Timestamp)
         df = df[valid_columns]
         df = df.sort_values(by='avg_a_power', ascending=False)
-        df = df.iloc[0:int(df.shape[0]*0.1),:]
         df = df.groupby('g_status').get_group(1.0)
         df = df.dropna(how='any')     
     
@@ -152,10 +163,20 @@ def createTrValData(rawDataPath):
             tgDF = tgDF.append(df)
     
     tgDF = tgDF.sort_values(by='Timestamp')
+    tgDF = tgDF[:testTimeRanges[0][0]]
+
+    # Get valid samples with top 10% power for each wind speed bin.
+    vtgDF = pd.DataFrame(columns = tgDF.columns)
+    
+    for v in np.arange(int(WIND_BIN_MAX/WIND_BIN_SIZE)):
+        df = tgDF.query('({0:f} <= avg_ws1) & (avg_ws1 < {1:f})'.format(v * WIND_BIN_SIZE
+                                                                       , (v + 1.) * WIND_BIN_SIZE))
+        df = df.iloc[0:int(df.shape[0]*0.1),:] #?
+        vtgDF = vtgDF.append(df)
     
     # Apply Kalman filtering to avg_rwd1 for each wind turbine
     # and calibrate avg_ws1 with coefficients.
-    tgDFG = tgDF.groupby('Turbin_no')
+    tgDFG = vtgDF.groupby('Turbin_no')
     tgIds = list(tgDFG.groups.keys())
     
     for i, tgId in enumerate(tgIds):
@@ -246,12 +267,12 @@ class YawMisalignmentCalibrator(object):
         
         # Create training and validation data.
         tr, val = self.__createTrValData__(hps)
-        trInputM, trOutputM = tr
+        trInput1M, trInput2M, trOutputM = tr
         
         # Train the model.
         hists = []
         
-        hist = self.model.fit([trInputM], [trOutputM]
+        hist = self.model.fit([trInput1M, trInput2M], [trOutputM]
                       , epochs=self.hps['epochs']
                       , batch_size=self.hps['batch_size']
                       , verbose=1)
@@ -319,27 +340,63 @@ class YawMisalignmentCalibrator(object):
         # Load raw data.
         rawDatasDF = pd.read_csv('train.csv')
         
+        num_seq1 = hps['num_seq1']
+        num_seq2 = hps['num_seq2']
+        
         # Training data.
         trRawDatasDF = rawDatasDF.iloc[:int(rawDatasDF.shape[0]*(1.0 - hps['val_ratio'])), :]
+        numSample = trRawDatasDF.shape[0]
         
-        trInputM = np.concatenate([np.asarray(trRawDatasDF.loc[:-1, ['avg_a_power', 'c_avg_ws1']])
-                                  , np.asarray(trRawDatasDF.loc[1:, ['avg_a_power', 'c_avg_ws1']])], axis = 1)\
-                                  .reshape((trRawDatasDF.shape[0] - 1, 2, 2))
-        trOutputM = np.asarray(trRawDatasDF.loc[1:, ['avg_rwd1']])
+        trInput1M = np.concatenate([list(trRawDatasDF.loc[i:(numSample - num_seq1 + i + 1)
+                                                                , ['avg_a_power', 'c_avg_ws1']]) \
+                                   for i in range(num_seq1)], axis = 1)\
+                                  .reshape((numSample - num_seq1 + 1, num_seq1, 2))
+        trOutputM = np.asarray([list(trRawDatasDF.loc[(num_seq1*(i + 1)):(num_seq1*(i + 1) + num_seq2 + 1)
+                                                            , ['avg_rwd1']]) for i in range(numSample - num_seq1 + 1)]) # end?
+        trInput2M = np.asarray([list(np.concatenate([np.zeros(shape=(1)), trOutputM[i, :-1]]) \
+                          for i in range(numSample - num_seq1 + 1))])
         
-        tr = (trInputM, trOutputM)
+        tr = (trInput1M, trInput2M, trOutputM)
         
         # Validation data.
-        valRawDatasDF = rawDatasDF.iloc[int(rawDatasDF.shape[0]*(1.0 - hps['val_ratio'])):, :]
+        valRawDatasDF = rawDatasDF.iloc[:int(rawDatasDF.shape[0]*(1.0 - hps['val_ratio'])), :]
+        numSample = valRawDatasDF.shape[0]
         
-        valInputM = np.concatenate([np.asarray(valRawDatasDF.loc[:-1, ['avg_a_power', 'c_avg_ws1']])
-                                  , np.asarray(valRawDatasDF.loc[1:, ['avg_a_power', 'c_avg_ws1']])], axis = 1)\
-                                  .reshape((valRawDatasDF.shape[0] - 1, 2, 2))
-        valOutputM = np.asarray(valRawDatasDF.loc[1:, ['avg_rwd1']])
+        valInput1M = np.concatenate([list(valRawDatasDF.loc[i:(numSample - num_seq1 + i + 1)
+                                                                , ['avg_a_power', 'c_avg_ws1']]) \
+                                   for i in range(num_seq1)], axis = 1)\
+                                  .reshape((numSample - num_seq1 + 1, num_seq1, 2))
+        valOutputM = np.asarray([list(valRawDatasDF.loc[(num_seq1*(i + 1)):(num_seq1*(i + 1) + num_seq2 + 1)
+                                                            , ['avg_rwd1']]) for i in range(numSample - num_seq1 + 1)]) # end?
+        valInput2M = np.asarray([list(np.concatenate([np.zeros(shape=(1)), valOutputM[i, :-1]]) \
+                          for i in range(numSample - num_seq1 + 1))])
         
-        val = (valInputM, valOutputM)        
+        val = (valInput1M, valInput2M, valOutputM)       
         
         return tr, val
+
+    def evaluate(self, hps, modelLoading = True):
+        '''
+            Evaluate.
+            @param hps: Hyper-parameters.
+            @param modelLoading: Model loading flag.
+        '''
+
+        self.hps = hps
+        
+        if modelLoading == True:
+            print('Load the pre-trained model...')
+            
+            if IS_MULTI_GPU == True:
+                self.model = multi_gpu_model(keras.models.load_model(MODEL_FILE_NAME), gpus = NUM_GPUS) 
+            else:
+
+                self.model = keras.models.load_model(MODEL_FILE_NAME)
+
+        # Make the prediction model.
+        self.__makePredictionModel__();
+        
+        # TODO   
 
     def test(self, hps, modelLoading = True):
         '''
@@ -369,19 +426,44 @@ class YawMisalignmentCalibrator(object):
             
             # Get testing data belonging to time range.
             teDataPartDF = teDataDF[:r[0]]
+            
+            # Create time range string.
+            timeRangeStr = '{0:d}/{1:d}/{2:d} to {3:d}/{4:d}/{5:d}'.format(r[0].year
+                                                                           , r[0].month
+                                                                           , r[0].day
+                                                                           , r[1].year
+                                                                           , r[2].month
+                                                                           , r[3].day)
                         
             if i == 0:
-                predResultDF = self.predict(teDataPartDF)
+                predResultDF = self.predict(teDataPartDF, timeRangeStr)
             else:
-                predResultDF = predResultDF.append(self.predict(teDataPartDF))
+                predResultDF = predResultDF.append(self.predict(teDataPartDF, timeRangeStr))
         
         # Save.
-
- 
-    def predict(self, teDataPartDF):
+        predResultDFG = predResultDF.groupby('Turbine_no')
+        wtNames = list(predResultDFG.groups.keys())
+        
+        resDF = pd.DataFrame(columns=['Turbine', 'Date Range', 'Weekly Estimation YAW Error'])
+        
+        for i, wtName in enumerate(wtNames):
+            df = predResultDFG.get_group(wtName)
+            
+            # Sort. ?
+            
+            res = {'Turbine': list(df.Turbine_no)
+                   , 'Date Range': list(df.time_range)
+                   , 'Weekly Estimation YAW Error': list(df.aggregate_yme_val)}
+        
+            resDF = resDF.append(pd.DataFrame(res))
+        
+        resDF.to_csv(RESULT_FILE_NAME, index=False) #?
+        
+    def predict(self, teDataPartDF, timeRangeStr):
         '''
             Predict yaw misalignment error.
             @param teDataPartDF: Testing data frame belonging to time range.
+            @param timeRangeStr: Time range string.
         '''
         
         # Predict yme by each wind turbine.
@@ -390,11 +472,43 @@ class YawMisalignmentCalibrator(object):
         teDataPartDFG = teDataPartDF.groupby('Turbine_no')
         wtNames = list(teDataPartDFG.groups.keys())
         
+        num_seq1 = self.hps['num_seq1']
+        num_seq2 = self.hps['num_seq2']
+        
         for i, wtName in enumerate(wtNames):
+            df = teDataPartDFG.get_group(wtName)
             
+            # Get the first sequence's internal state.
+            # Check the df size is within the number of sequence 1.
+            if df.shape[0] < num_seq1:
+                input = np.concatenate([list(df.loc[:, ['avg_a_power', 'c_avg_ws1']])
+                                        , [list(df.loc[-1, ['avg_a_power', 'c_avg_ws1']]) for _ in range(num_seq1 - df.shape[0])]]) #?
+            else:
+                input = df.loc[int(-1 * num_seq1):, ['avg_a_power', 'c_avg_ws1']] #?
+            
+            _, c = self.afModel.predict(input)
+            
+            # Predict ywe values for 7 days with 10 minute interval.
+            vals = []
+            initVal = np.zeros(shape=(1,2)) #?
+            
+            val, c = self.predModel.predict([initVal, c]) # Value dimension?
+            
+            for j in range(num_seq2):
+                val, c = self.predModel.predict([val, c])
+                vals.append(val)
+            
+            vals = np.asarray(vals)
+            
+            res = {'Turbine_no': [wtName]
+                   , 'time_range': [timeRangeStr]
+                   , 'aggregate_yme_val': [vals.mean()]
+                   , 'yme_vals': [vals]}
+            
+            resDF = resDF.append(pd.DataFrame(res))
         
+        return resDF
         
- 
     def __loadTestingData__(self):
         '''
             Load testing data.
@@ -412,7 +526,7 @@ class YawMisalignmentCalibrator(object):
                          , 'Turbine_no']
         
         # Determine time range.
-        st = testTimeRanges[0][0] - pd.Timedelta(self.hps['num_seq'] * 10.0, 'm')
+        st = testTimeRanges[0][0] - pd.Timedelta(self.hps['num_seq1'] * 10.0, 'm')
         ft = testTimeRanges[0][0]
         
         # B site.
@@ -511,5 +625,125 @@ class YawMisalignmentCalibrator(object):
         
         return teDataDF
                
+def main(args):
+    '''
+        Main.
+        @param args: Arguments.
+    '''
+    
+    hps = {}
+    
+    if args.mode == 'data':
+        
+        # Get arguments.
+        rawDataPath = args.raw_data_path
+        
+        # Create training and validation data.
+        createTrValData(rawDataPath)
+    elif args.mode == 'train':
+        
+        # Get arguments.
+        rawDataPath = args.raw_data_path
+        
+        # hps.
+        hps['num_seq1'] = int(args.num_seq1)
+        hps['num_seq2'] = int(args.num_seq2)
+        hps['lstm1_dim'] = int(args.lstm1_dim)
+        hps['lstm2_dim'] = int(args.lstm2_dim)
+        hps['num_layers'] = int(args.num_layers)
+        hps['dense1_dim'] = int(args.dense1_dim)
+        hps['dropout1_rate'] = float(args.dropout1_rate)
+        hps['lr'] = float(args.lr)
+        hps['beta_1'] = float(args.beta_1)
+        hps['beta_2'] = float(args.beta_2)
+        hps['decay'] = float(args.decay) 
+        hps['epochs'] = int(args.epochs) 
+        hps['batch_size'] = int(args.batch_size) 
+        hps['val_ratio'] = float(args.val_ratio)
+        
+        modelLoading = False if int(args.model_load) == 0 else True        
+        
+        # Train.
+        ymc = YawMisalignmentCalibrator(rawDataPath)
+        
+        ymc.train(hps, modelLoading)
+    elif args.mode == 'evaluate':
+        
+        # Get arguments.
+        rawDataPath = args.raw_data_path
+        
+        # hps.
+        hps['num_seq1'] = int(args.num_seq1)
+        hps['num_seq2'] = int(args.num_seq2)
+        hps['lstm1_dim'] = int(args.lstm1_dim)
+        hps['lstm2_dim'] = int(args.lstm2_dim)
+        hps['num_layers'] = int(args.num_layers)
+        hps['dense1_dim'] = int(args.dense1_dim)
+        hps['dropout1_rate'] = float(args.dropout1_rate)
+        hps['lr'] = float(args.lr)
+        hps['beta_1'] = float(args.beta_1)
+        hps['beta_2'] = float(args.beta_2)
+        hps['decay'] = float(args.decay) 
+        hps['epochs'] = int(args.epochs) 
+        hps['batch_size'] = int(args.batch_size) 
+        hps['val_ratio'] = float(args.val_ratio)
+        
+        modelLoading = False if int(args.model_load) == 0 else True         
+        
+        # Evaluate.
+        ymc = YawMisalignmentCalibrator(rawDataPath)
+        
+        ymc.evaluate(hps, modelLoading) #?
+    elif args.mode == 'test':
+        
+         # Get arguments.
+        rawDataPath = args.raw_data_path
+        
+        # hps.
+        hps['num_seq1'] = int(args.num_seq1)
+        hps['num_seq2'] = int(args.num_seq2)
+        hps['lstm1_dim'] = int(args.lstm1_dim)
+        hps['lstm2_dim'] = int(args.lstm2_dim)
+        hps['num_layers'] = int(args.num_layers)
+        hps['dense1_dim'] = int(args.dense1_dim)
+        hps['dropout1_rate'] = float(args.dropout1_rate)
+        hps['lr'] = float(args.lr)
+        hps['beta_1'] = float(args.beta_1)
+        hps['beta_2'] = float(args.beta_2)
+        hps['decay'] = float(args.decay) 
+        hps['epochs'] = int(args.epochs) 
+        hps['batch_size'] = int(args.batch_size) 
+        hps['val_ratio'] = float(args.val_ratio)
+        
+        modelLoading = False if int(args.model_load) == 0 else True          
+        
+        # Test.
+        ymc = YawMisalignmentCalibrator(rawDataPath)
+        
+        ymc.test(hps, modelLoading) #?           
+        
 if __name__ == '__main__':
-    pass
+    
+    # Parse arguments.
+    parser = argparse.ArgumentParser()
+    
+    parser.add_argument('--mode')
+    parser.add_argument('--raw_data_path')
+    parser.add_argument('--num_seq1')
+    parser.add_argument('--num_seq2')
+    parser.add_argument('--lstm1_dim')
+    parser.add_argument('--lstm2_dim')    
+    parser.add_argument('--num_layers')
+    parser.add_argument('--dense1_dim')
+    parser.add_argument('--dropout1_rate')
+    parser.add_argument('--lr')
+    parser.add_argument('--beta_1')
+    parser.add_argument('--beta_2')
+    parser.add_argument('--decay')
+    parser.add_argument('--epochs')
+    parser.add_argument('--batch_size')
+    parser.add_argument('--val_ratio')
+    parser.add_argument('--model_load')
+    args = parser.parse_args()
+    
+    main(args)
