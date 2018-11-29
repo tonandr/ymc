@@ -153,7 +153,7 @@ class YawMisalignmentCalibrator(object):
         self.model.summary()        
         
         # Create training and validation data.
-        tr, val = self.__createTrValData__(hps, dataLoading=False)
+        tr, val = self.__createTrValData__(hps, dataLoading=True)
         trInput1M, trInput2M, trOutputM = tr
         valInput1M, valInput2M, valOutputM = val
         
