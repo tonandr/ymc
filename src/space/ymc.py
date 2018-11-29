@@ -12,6 +12,7 @@ import sys
 
 import pandas as pd
 import numpy as np
+import scipy.io as io
 
 from keras.models import Model
 from keras.layers import LSTM, GRU, Dense, Dropout, Flatten, Input
@@ -227,7 +228,18 @@ class YawMisalignmentCalibrator(object):
         '''
         
         if dataLoading:
-            pass
+            trValMs_mat = io.loadmat('trValMs.mat')
+            trInput1M = trValMs_mat['trInput1M']
+            trInput2M = trValMs_mat['trInput2M']
+            trOutputM = trValMs_mat['trOutputM']
+            valInput1M = trValMs_mat['valInput1M']
+            valInput2M = trValMs_mat['valInput2M']
+            valOutputM = trValMs_mat['valOutputM']
+            
+            tr = (trInput1M, trInput2M, trOutputM)
+            val = (valInput1M, valInput2M, valOutputM)
+            
+            return tr, val
             
         pClient = ipp.Client()
         pView = pClient[:]
@@ -299,6 +311,15 @@ class YawMisalignmentCalibrator(object):
         valInput2M = np.expand_dims(np.asarray(valInput2), 2)
         
         val = (valInput1M, valInput2M, valOutputM)      
+        
+        # Save data.
+        io.savemat('trValMs.mat', mdict={'trInput1M': trInput1M
+                                     , 'trInput2M': trInput2M
+                                     , 'trOutputM': trOutputM
+                                     , 'valInput1M': valInput1M
+                                     , 'valInput2M': valInput2M
+                                     , 'valOutputM': valOutputM}
+        , oned_as='row') #?
         
         return tr, val
 
@@ -414,6 +435,7 @@ class YawMisalignmentCalibrator(object):
             # Get the first sequence's internal state.
             # Get input data.
             inputs = []
+            real_rwds = []
             t = r[0]
             
             while t <= r[1]:
@@ -423,31 +445,46 @@ class YawMisalignmentCalibrator(object):
                 if input1.shape[0] == 0: #?
                     if len(inputs) == 0:
                         input1 = np.concatenate([np.zeros(shape=(1,2)) for _ in range(num_seq1)]) #?
+                        real_rwds.append(0.)
                     else:
                         input1 = inputs[-1]
-                        inputs.append(input1)    
+                        inputs.append(input1)
+                        real_rwds.append(real_rwds[-1])    
                         t = t + dt
                         continue
                 elif input1.shape[0] < num_seq1:
                     input1 = np.concatenate([input1] + [np.expand_dims(input1[-1],0) for _ in range(num_seq1 - input1.shape[0])])
-                
+                    
+                    try:
+                        real_rwd = df.avg_rwd1.loc[t]
+                        real_rwds.append(real_rwd)
+                    except KeyError:
+                        if len(inputs) == 0:
+                            real_rwds.append(0.)
+                        else:
+                            real_rwds.append(real_rwds[-1])
+                    
                 inputs.append(np.expand_dims(input1, 0))    
                 t = t + dt
                                 
             inputs = np.concatenate(inputs) #?
+            real_rwds = np.asarray(real_rwds)
             
             cs = self.afModel.predict(inputs)
             
             # Predict ywe values for 7 days with 10 minute interval.
+            # Evaluate total yaw offset values.
             initVals = np.zeros(shape=(inputs.shape[0],1,1)) #?
             
-            vals, _ = self.predModel.predict([initVals, cs]) # Value dimension?
-            vals = np.squeeze(vals)
+            eval_rwds, _ = self.predModel.predict([initVals, cs]) # Value dimension?
+            eval_rwds = np.squeeze(eval_rwds)
+                        
+            yme_vals = eval_rwds - real_rwds
             
             res = {'Turbine_no': [wtName]
                    , 'time_range': [timeRangeStr]
-                   , 'aggregate_yme_val': [vals.mean()]
-                   , 'yme_vals': [vals]}
+                   , 'aggregate_yme_val': [yme_vals.mean()]
+                   , 'yme_vals': [yme_vals]}
             
             resDF = resDF.append(pd.DataFrame(res))
         
@@ -531,7 +568,7 @@ class YawMisalignmentCalibrator(object):
         vbDF.index.name = 'Timestamp' 
         vbDF = vbDF.sort_values(by='Timestamp')
         
-        # Apply Kalman filtering to avg_rwd1 for each wind turbine
+        # Apply Kalman filtering to avg_rwd1 for each wind turbine and reduce yaw misalignment
         # and calibrate avg_ws1 with coefficients.
         bDFG = vbDF.groupby('Turbine_no')
         bIds = list(bDFG.groups.keys())
@@ -539,8 +576,8 @@ class YawMisalignmentCalibrator(object):
         for i, bId in enumerate(bIds):
             df = bDFG.get_group(bId)
             
-            # Apply Kalman filtering to avg_rwd1.
-            avg_rwd1s = applyKalmanFilter(np.asarray(df.avg_rwd1))
+            # Apply Kalman filtering to avg_rwd1 for each wind turbine and reduce yaw misalignment.
+            avg_rwd1s = np.asarray(df.avg_rwd1) - applyKalmanFilter(np.asarray(df.avg_rwd1))
             
             # Calibrate avg_ws1 with coefficients.
             c_avg_ws1s = np.asarray(df.corr_offset_anem1 + df.corr_factor_anem1 * df.avg_ws1 \
@@ -556,7 +593,7 @@ class YawMisalignmentCalibrator(object):
         # Testing.
         bDF = bTotalDF[st:ft]
         
-        # Apply Kalman filtering to avg_rwd1 for each wind turbine
+        # Apply Kalman filtering to avg_rwd1 for each wind turbine and reduce yaw misalignment
         # and calibrate avg_ws1 with coefficients.
         bDFG = bDF.groupby('Turbine_no')
         bIds = list(bDFG.groups.keys())
@@ -564,8 +601,8 @@ class YawMisalignmentCalibrator(object):
         for i, bId in enumerate(bIds):
             df = bDFG.get_group(bId)
             
-            # Apply Kalman filtering to avg_rwd1.
-            avg_rwd1s = applyKalmanFilter(np.asarray(df.avg_rwd1))
+            # Apply Kalman filtering to avg_rwd1 for each wind turbine and reduce yaw misalignment.
+            avg_rwd1s = np.asarray(df.avg_rwd1) - applyKalmanFilter(np.asarray(df.avg_rwd1))
             
             # Calibrate avg_ws1 with coefficients.
             c_avg_ws1s = np.asarray(df.corr_offset_anem1 + df.corr_factor_anem1 * df.avg_ws1 \
@@ -618,7 +655,7 @@ class YawMisalignmentCalibrator(object):
         vtgDF.index.name = 'Timestamp' 
         vtgDF = vtgDF.sort_values(by='Timestamp')
     
-        # Apply Kalman filtering to avg_rwd1 for each wind turbine
+        # Apply Kalman filtering to avg_rwd1 for each wind turbine and reduce yaw misalignment
         # and calibrate avg_ws1 with coefficients.
         tgDFG = vtgDF.groupby('Turbine_no')
         tgIds = list(tgDFG.groups.keys())
@@ -626,8 +663,8 @@ class YawMisalignmentCalibrator(object):
         for i, tgId in enumerate(tgIds):
             df = tgDFG.get_group(tgId)
             
-            # Apply Kalman filtering to avg_rwd1.
-            avg_rwd1s = applyKalmanFilter(np.asarray(df.avg_rwd1))
+            # Apply Kalman filtering to avg_rwd1 for each wind turbine and reduce yaw misalignment.
+            avg_rwd1s = np.asarray(df.avg_rwd1) - applyKalmanFilter(np.asarray(df.avg_rwd1))
             
             # Calibrate avg_ws1 with coefficients.
             c_avg_ws1s = np.asarray(df.corr_offset_anem1 + df.corr_factor_anem1 * df.avg_ws1 \
@@ -643,7 +680,7 @@ class YawMisalignmentCalibrator(object):
         # Testing.
         tgDF = tgTotalDF[st:ft]
         
-        # Apply Kalman filtering to avg_rwd1 for each wind turbine
+        # Apply Kalman filtering to avg_rwd1 for each wind turbine and reduce yaw misalignment
         # and calibrate avg_ws1 with coefficients.
         tgDFG = tgDF.groupby('Turbine_no')
         tgIds = list(tgDFG.groups.keys())
@@ -651,8 +688,8 @@ class YawMisalignmentCalibrator(object):
         for i, tgId in enumerate(tgIds):
             df = tgDFG.get_group(tgId)
             
-            # Apply Kalman filtering to avg_rwd1.
-            avg_rwd1s = applyKalmanFilter(np.asarray(df.avg_rwd1))
+            # Apply Kalman filtering to avg_rwd1 for each wind turbine and reduce yaw misalignment.
+            avg_rwd1s = np.asarray(df.avg_rwd1) - applyKalmanFilter(np.asarray(df.avg_rwd1))
             
             # Calibrate avg_ws1 with coefficients.
             c_avg_ws1s = np.asarray(df.corr_offset_anem1 + df.corr_factor_anem1 * df.avg_ws1 \
