@@ -92,3 +92,6 @@ bDF_18_G = bDF_18.groupby('Turbine_no')
 bDF_18_b18 = bDF_18_G.get_group('B18')
 bDF_18_b18.avg_rwd1.plot(figsize=(20,10))
 plt.grid()
+
+for a, b in zip(eval_rwds, real_rwds):
+    print('{0:15f}  {1:15f}  {2:15f}'.format(a, b, a - b))

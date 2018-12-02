@@ -52,7 +52,7 @@ NUM_GPUS = 4
 
 IS_DEBUG = False
 
-def applyKalmanFilter(data, q=1e-5):
+def applyKalmanFilter(data, q=1e-2):
     '''
         Apply Kalman filter.
         @param data: Data.
@@ -99,10 +99,11 @@ class YawMisalignmentCalibrator(object):
         # Initialize.
         self.rawDataPath = rawDataPath
         
-    def train(self, hps, modelLoading = False):
+    def train(self, hps, trainDataLoading = True, modelLoading = False):
         '''
             Train.
             @param hps: Hyper-parameters.
+            @param trainDataLoading: Train data loading flag.
             @param modelLoading: Model loading flag.
         '''
         
@@ -153,7 +154,7 @@ class YawMisalignmentCalibrator(object):
         self.model.summary()        
         
         # Create training and validation data.
-        tr, val = self.__createTrValData__(hps, dataLoading=True)
+        tr, val = self.__createTrValData__(hps, trainDataLoading, dataLoading = False)
         trInput1M, trInput2M, trOutputM = tr
         valInput1M, valInput2M, valOutputM = val
         
@@ -220,10 +221,11 @@ class YawMisalignmentCalibrator(object):
                       
         self.predModel = Model([input2, recurState], [output, c2])    
 
-    def __createTrValData__(self, hps, dataLoading): # Parallel computing is necessary.
+    def __createTrValData__(self, hps, trainDataLoading = True, dataLoading = False):
         '''
             Create training and validation data.
             @param hps: Hyper-parameters.
+            @param trainDataLoading: Train data loading flag.
             @param dataLoading: Data loading flag.
         '''
         
@@ -245,7 +247,10 @@ class YawMisalignmentCalibrator(object):
         pView = pClient[:]
         
         # Load raw data.
-        rawDatasDF = pd.read_csv('train.csv')
+        if trainDataLoading:
+            rawDatasDF = pd.read_csv('train.csv')
+        else:
+            rawDatasDF = self.trValDataDF
         
         num_seq1 = hps['num_seq1']
         num_seq2 = hps['num_seq2']
@@ -323,7 +328,7 @@ class YawMisalignmentCalibrator(object):
         
         return tr, val
 
-    def evaluate(self, hps, modelLoading = True):
+    def evaluate(self, hps, modelLoading = True, evalDataLoading = False):
         '''
             Evaluate.
             @param hps: Hyper-parameters.
@@ -344,12 +349,148 @@ class YawMisalignmentCalibrator(object):
         # Make the prediction model.
         self.__makePredictionModel__();
         
-        # TODO   
+        # Load evaluation data.
+        valid_columns = ['avg_a_power'
+                 , 'avg_rwd1'
+                 , 'avg_ws1'
+                 , 'corr_factor_anem1'
+                 , 'corr_offset_anem1'
+                 , 'offset_anem1'
+                 , 'slope_anem1'
+                 , 'g_status'
+                 , 'Turbine_no']
+        
+        if evalDataLoading:
+            evalDF = pd.read_csv('evalDF.csv')
+        else:
+                
+            # B08 data.
+            b8DF = pd.read_excel(os.path.join(self.rawDataPath, 'SCADA_B8_19May_1June.xlsx'))
+            b8DF = b8DF.append(pd.read_excel(os.path.join(self.rawDataPath,'SCADA_B8_2june_15june.xlsx'))
+                               , ignore_index=True)
+            b8DF.index = pd.to_datetime(b8DF.Timestamp)
+            b8DF = b8DF[valid_columns]
+            
+            # Relevant lidar data.
+            lidarDF = pd.read_excel(os.path.join(self.rawDataPath, 'Lidar_data 19May2018_to_15june2018_TurbineB8.xlsx'))
+            lidarDF.index = pd.to_datetime(lidarDF.Date_time)
+            lidarDF = lidarDF[lidarDF.columns[1:]]
+            
+            # Evaluation data.
+            evalDF = pd.concat([lidarDF, b8DF], axis=1)
+            evalDF = evalDF.dropna(how='any')
+            evalDF.index.name = 'Timestamp'
+            evalDF.sort_values(by='Timestamp')
+            
+            # Save evaluation data.
+            evalDF.to_csv('evalDF.csv')
 
-    def test(self, hps, modelLoading = True):
+        teDataDF = pd.DataFrame(columns=['Turbine_no', 'avg_a_power', 'YMA(deg)', 'c_avg_ws1', 'avg_rwd1'])
+            
+        # Apply Kalman filtering to avg_rwd1 for each wind turbine and reduce yaw misalignment
+        # and calibrate avg_ws1 with coefficients.
+        avg_rwd1s = np.asarray(evalDF.avg_rwd1) #- applyKalmanFilter(np.asarray(evalDF.avg_rwd1))
+        
+        # Calibrate avg_ws1 with coefficients.
+        c_avg_ws1s = np.asarray(evalDF.corr_offset_anem1 + evalDF.corr_factor_anem1 * evalDF.avg_ws1 \
+                                + evalDF.slope_anem1 * evalDF.avg_rwd1 + evalDF.offset_anem1) #?
+        
+        teData = {'Timestamp': list(pd.to_datetime(evalDF.Timestamp))
+                    , 'Turbine_no': list(evalDF.Turbine_no)
+                     , 'avg_a_power': np.asarray(evalDF.avg_a_power)
+                     , 'YMA(deg)': np.asarray(evalDF['YMA(deg)'])
+                     , 'c_avg_ws1': c_avg_ws1s
+                     , 'avg_rwd1': avg_rwd1s}
+        
+        teDataDF = teDataDF.append(pd.DataFrame(teData)) 
+        teDataDF.index = teDataDF.Timestamp
+        teDataDF = teDataDF[['Turbine_no', 'avg_a_power', 'YMA(deg)', 'c_avg_ws1', 'avg_rwd1']]
+
+        # Evaluate yaw misalignment error.
+        # First, evaluate total yaw error.
+        df = teDataDF     
+        num_seq1 = self.hps['num_seq1']
+
+        # Get the first sequence's internal state.
+        # Get input data.
+        inputs = []
+        real_rwds = []
+        lidar_rwds = []
+        r = (teDataDF.index.min(), teDataDF.index.max())
+        t = r[0]
+        
+        while t <= r[1]: #?
+            input1 = np.asarray(list(zip(df[(t - (num_seq1 - 1) * dt ):t].avg_a_power, df[(t - (num_seq1 - 1) * dt ):t].c_avg_ws1)))
+            
+            # Check exception.
+            if input1.shape[0] == 0: #?
+                if len(inputs) == 0:
+                    input1 = np.concatenate([np.zeros(shape=(1,2)) for _ in range(num_seq1)]) #?
+                else:
+                    input1 = inputs[-1]
+                    inputs.append(input1)
+                    real_rwds.append(real_rwds[-1])
+                    lidar_rwds.append(lidar_rwds[-1])    
+                    t = t + dt
+                    continue
+            elif input1.shape[0] < num_seq1:
+                input1 = np.concatenate([input1] + [np.expand_dims(input1[-1],0) for _ in range(num_seq1 - input1.shape[0])])
+                
+            try:
+                real_rwd = df.avg_rwd1.loc[t]
+                lidar_rwd = df['YMA(deg)'].loc[t]
+                real_rwds.append(real_rwd)
+                lidar_rwds.append(lidar_rwd)
+            except KeyError:
+                if len(inputs) == 0:
+                    real_rwds.append(0.)
+                    lidar_rwds.append(0.)
+                else:
+                    real_rwds.append(real_rwds[-1])
+                    lidar_rwds.append(lidar_rwds[-1])
+                
+            inputs.append(np.expand_dims(input1, 0))    
+            t = t + dt
+                            
+        inputs = np.concatenate(inputs) #?
+        real_rwds = np.asarray(real_rwds)
+        
+        cs = self.afModel.predict(inputs)
+        
+        # Evaluate total yaw offset values.
+        initVals = np.zeros(shape=(inputs.shape[0],1,1)) #?
+        
+        eval_rwds, _ = self.predModel.predict([initVals, cs]) # Value dimension?
+        eval_rwds = np.squeeze(eval_rwds)
+                    
+        yme_vals = eval_rwds - real_rwds
+        yme_vals = yme_vals[real_rwds != 0.]
+        
+        # Calculate score.
+        # Get lidar yme values.
+        lidar_yme_vals = lidar_rwds - real_rwds
+        lidar_yme_vals = lidar_yme_vals[real_rwds != 0.]
+        
+        #diff_vals = yme_vals - lidar_yme_vals
+        #rmse = np.sqrt(np.mean(np.power(diff_vals, 2.0)))
+        
+        rmse = np.sqrt(np.power(yme_vals.mean() - lidar_yme_vals.mean(), 2.0))
+        
+        score = np.max([0., (5 - rmse)/5 * 1000000])    
+
+        print('Score: {0:f} \n'.format(score))
+                        
+        with open('score.csv', 'w') as f:
+            f.write(str(score) + '\n') #?
+
+        return score
+
+    def test(self, hps, outputFileName = None, testDataLoading = True, modelLoading = True):
         '''
             Test.
             @param hps: Hyper-parameters.
+            @param outputFileName: Output file name.
+            @param testDataLoading: Test data loading flag.
             @param modelLoading: Model loading flag.
         '''
 
@@ -364,11 +505,15 @@ class YawMisalignmentCalibrator(object):
 
                 self.model = keras.models.load_model(MODEL_FILE_NAME)
 
-        # Make the prediction model.
-        self.__makePredictionModel__();
+            # Make the prediction model.
+            self.__makePredictionModel__();
         
         # Load testing data.
-        teDataDF = pd.read_csv('teDataDF.csv')
+        if testDataLoading:
+            teDataDF = pd.read_csv('teDataDF.csv')
+        else:
+            teDataDF = self.teDataDF
+        
         teDataDF.index = pd.to_datetime(teDataDF.Timestamp)
         teDataDF = teDataDF.iloc[:, 1:]
         
@@ -382,7 +527,7 @@ class YawMisalignmentCalibrator(object):
             else:
                 predResultDF = predResultDF.append(self.predict(teDataDF, r, timeRangeStr))
         
-        # Save.
+        # Save summary result.
         predResultDFG = predResultDF.groupby('Turbine_no')
         wtNames = list(predResultDFG.groups.keys())
         
@@ -400,6 +545,22 @@ class YawMisalignmentCalibrator(object):
         
         resDF.to_csv(RESULT_FILE_NAME, index=False) #?
         
+        # Save detailed result. #?
+        if outputFileName != None:
+            with open(outputFileName, 'w') as f:
+                for i in range(predResultDF.shape[0]):
+                    wtName = predResultDF.loc[i, 'Turbine_no']
+                    aggregate_yme_val = predResultDF.loc[i, 'aggregate_yme_val']
+                    yme_vals = predResultDF.loc[i, 'yme_vals']
+                    
+                    f.write(wtName + '\n')
+                    f.write(aggregate_yme_val + '\n')
+                    
+                    for v in yme_vals: #?
+                        f.write(str(v) + ' ')
+                    
+                    f.write('\n')
+                    
     def predict(self, teDataDF, r, timeRangeStr):
         '''
             Predict yaw misalignment error.
@@ -445,7 +606,6 @@ class YawMisalignmentCalibrator(object):
                 if input1.shape[0] == 0: #?
                     if len(inputs) == 0:
                         input1 = np.concatenate([np.zeros(shape=(1,2)) for _ in range(num_seq1)]) #?
-                        real_rwds.append(0.)
                     else:
                         input1 = inputs[-1]
                         inputs.append(input1)
@@ -455,14 +615,14 @@ class YawMisalignmentCalibrator(object):
                 elif input1.shape[0] < num_seq1:
                     input1 = np.concatenate([input1] + [np.expand_dims(input1[-1],0) for _ in range(num_seq1 - input1.shape[0])])
                     
-                    try:
-                        real_rwd = df.avg_rwd1.loc[t]
-                        real_rwds.append(real_rwd)
-                    except KeyError:
-                        if len(inputs) == 0:
-                            real_rwds.append(0.)
-                        else:
-                            real_rwds.append(real_rwds[-1])
+                try:
+                    real_rwd = df.avg_rwd1.loc[t]
+                    real_rwds.append(real_rwd)
+                except KeyError:
+                    if len(inputs) == 0:
+                        real_rwds.append(0.)
+                    else:
+                        real_rwds.append(real_rwds[-1])
                     
                 inputs.append(np.expand_dims(input1, 0))    
                 t = t + dt
@@ -490,10 +650,11 @@ class YawMisalignmentCalibrator(object):
         
         return resDF
 
-    def createTrValTeData(self, hps):
+    def createTrValTeData(self, hps, dataSaving = True): # Normalization?
         '''
             Create training and validation data.
             @param hps: Hyper-parameters.
+            @param dataSaving: Data saving flag.
         '''
 
         self.hps = hps
@@ -708,10 +869,12 @@ class YawMisalignmentCalibrator(object):
         teDataDF.sort_values(by='Timestamp')
  
         # Save data.
-        trValDataDF.to_csv('train.csv')
-        teDataDF.to_csv('test.csv')
+        if dataSaving:
+            trValDataDF.to_csv('train.csv')
+            teDataDF.to_csv('test.csv')
         
-        return trValDataDF, teDataDF
+        self.trValDataDF = trValDataDF
+        self.teDataDF = teDataDF
 
 def loadDF(file):
     '''
@@ -778,7 +941,7 @@ def main(args):
         
         modelLoading = False if int(args.model_load) == 0 else True  
         
-        # Create training and validation data.
+        # Create training and testing data.
         ts = time.time()
         ymc = YawMisalignmentCalibrator(rawDataPath)
         ymc.createTrValTeData(hps)
@@ -813,7 +976,7 @@ def main(args):
         ymc = YawMisalignmentCalibrator(rawDataPath)
         
         ts = time.time()
-        ymc.train(hps, modelLoading)
+        ymc.train(hps, modelLoading = modelLoading)
         te = time.time()
         
         print('Elasped time: {0:f}s'.format(te-ts))
@@ -843,7 +1006,7 @@ def main(args):
         # Evaluate.
         ymc = YawMisalignmentCalibrator(rawDataPath)
         
-        ymc.evaluate(hps, modelLoading) #?
+        ymc.evaluate(hps, modelLoading = modelLoading, evalDataLoading = True) #?
     elif args.mode == 'test':
         
          # Get arguments.
@@ -871,10 +1034,59 @@ def main(args):
         ymc = YawMisalignmentCalibrator(rawDataPath)
         
         ts = time.time()
-        ymc.test(hps, modelLoading) #? 
+        ymc.test(hps, modelLoading = modelLoading) #? 
         te = time.time()
         
         print('Elasped time: {0:f}s'.format(te-ts))
+    elif args.mode == 'train_test':
+        
+         # Get arguments.
+        rawDataPath = args.raw_data_path
+        
+        # hps.
+        hps['num_seq1'] = int(args.num_seq1)
+        hps['num_seq2'] = int(args.num_seq2)
+        hps['gru1_dim'] = int(args.gru1_dim)
+        hps['gru2_dim'] = int(args.gru2_dim)
+        hps['num_layers'] = int(args.num_layers)
+        hps['dense1_dim'] = int(args.dense1_dim)
+        hps['dropout1_rate'] = float(args.dropout1_rate)
+        hps['lr'] = float(args.lr)
+        hps['beta_1'] = float(args.beta_1)
+        hps['beta_2'] = float(args.beta_2)
+        hps['decay'] = float(args.decay) 
+        hps['epochs'] = int(args.epochs) 
+        hps['batch_size'] = int(args.batch_size) 
+        hps['val_ratio'] = float(args.val_ratio)
+        
+        modelLoading = False if int(args.model_load) == 0 else True          
+
+        ymc = YawMisalignmentCalibrator(rawDataPath)        
+        
+        # Create training and testing data.
+        ts1 = time.time()
+        ymc.createTrValTeData(hps, dataSaving = False)
+        te1 = time.time()
+        
+        print('Data creating elasped time: {0:f}s'.format(te1 - ts1))       
+        
+        # Train.
+        ts2 = time.time()
+        ymc.train(hps, trainDataLoading = False, modelLoading = False)
+        te2 = time.time()
+        
+        print('Training elasped time: {0:f}s'.format(te2 - ts2))        
+        
+        # Test.        
+        ts3 = time.time()
+        ymc.test(hps, outputFileName = args.output_file_name, modelLoading = False) #? 
+        te3 = time.time()
+        
+        print('Testing elasped time: {0:f}s'.format(te3 - ts3))
+        print('Total elaped time: {0:f}s'.format(te3 - ts1))
+        
+        with open('elsped_time.csv', 'w') as f:
+            f.write(str(te3 - ts1) + '\n') #?
         
 if __name__ == '__main__':
     
