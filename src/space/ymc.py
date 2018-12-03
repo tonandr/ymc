@@ -138,7 +138,8 @@ class YawMisalignmentCalibrator(object):
             
             for i in range(1, hps['num_layers'] + 1):
                 x = Dense(self.hps['dense1_dim'], activation='relu', name='dense1_' + str(i))(x)
-                        
+            
+            x = Dropout(hps['dropout1_rate'])(x)            
             output = Dense(1, activation='linear', name='dense1_last')(x)
                                             
             # Create the model.
@@ -159,7 +160,7 @@ class YawMisalignmentCalibrator(object):
         # Create training and validation data.
         tr, val = self.__createTrValData__(hps, trainDataLoading = True, dataLoading = False)
         trInput1M, trInput2M, trOutputM = tr
-        valInput1M, valInput2M, valOutputM = val
+        #valInput1M, valInput2M, valOutputM = val
         
         # Train the model.
         hists = []
@@ -400,10 +401,10 @@ class YawMisalignmentCalibrator(object):
         
         teData = {'Timestamp': list(pd.to_datetime(evalDF.Timestamp))
                     , 'Turbine_no': list(evalDF.Turbine_no)
-                     , 'avg_a_power': np.asarray(evalDF.avg_a_power)
-                     , 'YMA(deg)': np.asarray(evalDF['YMA(deg)'])
-                     , 'c_avg_ws1': c_avg_ws1s
-                     , 'avg_rwd1': avg_rwd1s}
+                     , 'avg_a_power': np.asarray(evalDF.avg_a_power) / ACTIVE_POWER_MAX
+                     , 'YMA(deg)': np.asarray(evalDF['YMA(deg)']) #/ WIND_DIRECTION_NORMAL_FACTOR)
+                     , 'c_avg_ws1': c_avg_ws1s / WIND_SPEED_MAX
+                     , 'avg_rwd1': avg_rwd1s} #/ WIND_DIRECTION_NORMAL_FACTOR}
         
         teDataDF = teDataDF.append(pd.DataFrame(teData)) 
         teDataDF.index = teDataDF.Timestamp
@@ -467,12 +468,12 @@ class YawMisalignmentCalibrator(object):
         eval_rwds = np.squeeze(eval_rwds)
                     
         yme_vals = eval_rwds - real_rwds
-        yme_vals = yme_vals[real_rwds != 0.]
+        yme_vals = yme_vals[real_rwds != 0.] #* WIND_DIRECTION_NORMAL_FACTOR
         
         # Calculate score.
         # Get lidar yme values.
         lidar_yme_vals = lidar_rwds - real_rwds
-        lidar_yme_vals = lidar_yme_vals[real_rwds != 0.]
+        lidar_yme_vals = lidar_yme_vals[real_rwds != 0.]  #* WIND_DIRECTION_NORMAL_FACTOR
         
         #diff_vals = yme_vals - lidar_yme_vals
         #rmse = np.sqrt(np.mean(np.power(diff_vals, 2.0)))
@@ -643,7 +644,7 @@ class YawMisalignmentCalibrator(object):
             eval_rwds = np.squeeze(eval_rwds)
                         
             yme_vals = eval_rwds - real_rwds
-            yme_vals = yme_vals * WIND_DIRECTION_NORMAL_FACTOR
+            yme_vals = yme_vals #* WIND_DIRECTION_NORMAL_FACTOR
             
             res = {'Turbine_no': [wtName]
                    , 'time_range': [timeRangeStr]
@@ -751,7 +752,7 @@ class YawMisalignmentCalibrator(object):
             trValData = {'Turbine_no': list(df.Turbine_no)
                          , 'avg_a_power': np.asarray(df.avg_a_power) / ACTIVE_POWER_MAX
                          , 'c_avg_ws1': c_avg_ws1s / WIND_SPEED_MAX
-                         , 'avg_rwd1': avg_rwd1s / WIND_DIRECTION_NORMAL_FACTOR}
+                         , 'avg_rwd1': avg_rwd1s} # / WIND_DIRECTION_NORMAL_FACTOR}
             
             trValDataDF = trValDataDF.append(pd.DataFrame(trValData))
 
@@ -777,7 +778,7 @@ class YawMisalignmentCalibrator(object):
                         , 'Turbine_no': list(df.Turbine_no)
                          , 'avg_a_power': np.asarray(df.avg_a_power) / ACTIVE_POWER_MAX
                          , 'c_avg_ws1': c_avg_ws1s / WIND_SPEED_MAX
-                         , 'avg_rwd1': avg_rwd1s / WIND_DIRECTION_NORMAL_FACTOR}
+                         , 'avg_rwd1': avg_rwd1s} # / WIND_DIRECTION_NORMAL_FACTOR}
             
             teDataDF = teDataDF.append(pd.DataFrame(teData))
         
@@ -838,7 +839,7 @@ class YawMisalignmentCalibrator(object):
             trValData = {'Turbine_no': list(df.Turbine_no)
                          , 'avg_a_power': np.asarray(df.avg_a_power) / ACTIVE_POWER_MAX
                          , 'c_avg_ws1': c_avg_ws1s / WIND_SPEED_MAX
-                         , 'avg_rwd1': avg_rwd1s / WIND_DIRECTION_NORMAL_FACTOR}
+                         , 'avg_rwd1': avg_rwd1s} # / WIND_DIRECTION_NORMAL_FACTOR}
             
             trValDataDF = trValDataDF.append(pd.DataFrame(trValData))   
 
@@ -864,7 +865,7 @@ class YawMisalignmentCalibrator(object):
                         , 'Turbine_no': list(df.Turbine_no)
                          , 'avg_a_power': np.asarray(df.avg_a_power) / ACTIVE_POWER_MAX
                          , 'c_avg_ws1': c_avg_ws1s / WIND_SPEED_MAX
-                         , 'avg_rwd1': avg_rwd1s / WIND_DIRECTION_NORMAL_FACTOR}
+                         , 'avg_rwd1': avg_rwd1s} # / WIND_DIRECTION_NORMAL_FACTOR}
             
             teDataDF = teDataDF.append(pd.DataFrame(teData))   
            
