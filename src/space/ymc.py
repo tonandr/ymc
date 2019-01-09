@@ -55,7 +55,7 @@ NUM_GPUS = 4
 
 IS_DEBUG = False
 
-def applyKalmanFilter(data, q=1e-2):
+def applyKalmanFilter(data, q=1e-5):
     '''
         Apply Kalman filter.
         @param data: Data.
