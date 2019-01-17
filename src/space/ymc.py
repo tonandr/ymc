@@ -8,14 +8,13 @@ import os
 import glob
 import argparse
 import time
-import sys
 
 import pandas as pd
 import numpy as np
 import scipy.io as io
 
 from keras.models import Model
-from keras.layers import LSTM, GRU, Dense, Dropout, Flatten, Input
+from keras.layers import GRU, Dense, Dropout, Input
 from keras import optimizers
 from keras.utils import multi_gpu_model
 import keras
