@@ -1,5 +1,4 @@
-# ymc
-Yaw misalignment calibrator of wind turbine
+# Yaw misalignment calibrator of wind turbine
 
 I developed yaw misalignment calibrator of wind turbine while participating in 
 the contest as the link.
