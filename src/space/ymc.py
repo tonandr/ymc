@@ -124,7 +124,7 @@ class YawMisalignmentCalibrator(object):
             # Design the model.
             print('Design the model.')
             
-            # Input1: n (n sequence) x 2 (calibrated avg_rwd1, avg_a_power)   
+            # Input1: n (n sequence) x 2 (calibrated c_avg_ws1, avg_a_power)   
             input1 = Input(shape=(self.hps['num_seq1'], 2))
             _, c = GRU(self.hps['gru1_dim'], return_state = True, name='gru1')(input1)
             
