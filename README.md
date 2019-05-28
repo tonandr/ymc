@@ -35,7 +35,7 @@ The yaw misalignment prediction model as the seq2seq2 model was developed and ev
 
 where  βo, β1,  β2 are estimated regression coefficients, ε is the residual and  γ'is φ(t)+μ in our model.
 
-As shown in Figure 2, I develop the seq2seq2 model using Keras and GRU, and with the dataset for the seq2seq2, the model was trained and evaluated where two sequence sizes are optional, so you can customize them. Moreover, to reduce training time, accelerating computing using multi GPUs and distributed computing using ipyparallel are applied.
+As shown in Figure 2, I developed the seq2seq2 model using Keras and GRU, and with the dataset for the seq2seq2, the model was trained and evaluated where two sequence sizes are optional, so you can customize them. Moreover, to reduce training time, accelerating computing using multi GPUs and distributed computing using ipyparallel are applied.
 
 ## 3. Training guide.
 
@@ -71,7 +71,7 @@ In the contest, the performance is a square root of the average of the mean squa
 
 ## 4. Conclusion
 
-Yet, there is a bug, so it should be debugged. The SCADA data of this contest isn’t available. To test this model, I will enhance this model with open SCADA datasets. 
+Yet, there is a bug, so it should be debugged. The SCADA data of this contest isn’t available. I will enhance this model with open SCADA datasets. 
 
 ## Reference
 ### [1] Niko Mittelmeier and Martin Kuhn, 2018. Determination of optimal wind turbine alignment into the wind and detection of alignment changes with SCADA data.
