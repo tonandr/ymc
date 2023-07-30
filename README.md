@@ -71,7 +71,7 @@ In the contest, the performance is a square root of the average of the mean squa
 
 ## 4. Conclusion
 
-Yet, there is a bug, so it should be debugged. The SCADA data of this contest isn’t available. I will enhance this model with open SCADA datasets. 
+[This model is verified and enhanced with OpenFAST SCADA datasets.](https://www.linkedin.com/feed/update/urn:li:activity:7021055775426940928)
 
 ## Reference
 ### [1] Niko Mittelmeier and Martin Kuhn, 2018. Determination of optimal wind turbine alignment into the wind and detection of alignment changes with SCADA data.
