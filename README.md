@@ -73,8 +73,6 @@ In the contest, the performance is a square root of the average of the mean squa
 
 [This model is verified with OpenFAST SCADA datasets.](https://www.linkedin.com/feed/update/urn:li:activity:7021055775426940928)
 
-This project is closed.
-
 ## Reference
 ### [1] Niko Mittelmeier and Martin Kuhn, 2018. Determination of optimal wind turbine alignment into the wind and detection of alignment changes with SCADA data.
 ### [2] [Yaw Alignment Marathon Challenge hosted by Topcoder, 2018.](https://www.topcoder.com/challenges/17323?tab=details)
