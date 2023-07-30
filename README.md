@@ -71,7 +71,7 @@ In the contest, the performance is a square root of the average of the mean squa
 
 ## 4. Conclusion
 
-[This model is verified and enhanced with OpenFAST SCADA datasets.](https://www.linkedin.com/feed/update/urn:li:activity:7021055775426940928)
+[This model is verified with OpenFAST SCADA datasets.](https://www.linkedin.com/feed/update/urn:li:activity:7021055775426940928)
 
 This project is closed.
 
